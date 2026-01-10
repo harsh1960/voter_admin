@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Admin Panel - Voter Tool</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f3f4f6; padding: 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    
+    h1 { color: #111827; display: flex; align-items: center; justify-content: space-between; }
+    .badge { background: #2563eb; color: white; padding: 5px 12px; border-radius: 20px; font-size: 16px; }
+
+    /* Request Card Style */
+    .req-card { 
+        background: white; padding: 20px; border-radius: 10px; 
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 15px; 
+        display: flex; justify-content: space-between; align-items: center;
+        border-left: 5px solid #f59e0b; /* Orange for Pending */
+    }
+    
+    .info h3 { margin: 0 0 5px 0; font-size: 18px; color: #333; }
+    .info p { margin: 0; color: #666; font-size: 14px; }
+    .utr-code { font-family: monospace; background: #eee; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #000; }
+
+    .actions { display: flex; gap: 10px; }
+    .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; color: white; transition: 0.2s; }
+    .btn-approve { background: #16a34a; }
+    .btn-approve:hover { background: #15803d; }
+    .btn-reject { background: #dc2626; }
+    .btn-reject:hover { background: #b91c1c; }
+
+    .empty-state { text-align: center; color: #9ca3af; margin-top: 50px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Payment Requests <span id="countBadge" class="badge">0</span></h1>
+    <p style="color:#6b7280; margin-bottom: 20px;">Only "Pending" requests are shown here.</p>
+
+    <div id="requestList">
+        <div class="empty-state">Loading data...</div>
+    </div>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js";
+  import { getFirestore, collection, query, where, onSnapshot, doc, updateDoc } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js";
+
+  // --- 1. PASTE YOUR FIREBASE CONFIG HERE (Same as index.html) ---
+  const firebaseConfig = {
+    apiKey: "AIzaSyDZLakPR2A5wQ7okDL-L7nCSxJDICiMtEQ",
+    authDomain: "voter-5e759.firebaseapp.com",
+    projectId: "voter-5e759",
+    storageBucket: "voter-5e759.firebasestorage.app",
+    messagingSenderId: "118588658962",
+    appId: "1:118588658962:web:048048d4e8593e95580fcb",
+    measurementId: "G-C6BPLSF9W7"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  // --- 2. LISTEN FOR PENDING REQUESTS ---
+  // We look for users where paymentStatus == 'pending'
+  const q = query(collection(db, "users"), where("paymentStatus", "==", "pending"));
+
+  onSnapshot(q, (snapshot) => {
+      const list = document.getElementById("requestList");
+      const badge = document.getElementById("countBadge");
+      
+      list.innerHTML = ""; // Clear list
+      badge.innerText = snapshot.size; // Update counter
+
+      if (snapshot.empty) {
+          list.innerHTML = `<div class="empty-state">No pending requests right now.<br>Time to relax! ☕</div>`;
+          return;
+      }
+
+      snapshot.forEach((docSnap) => {
+          const user = docSnap.data();
+          const uid = docSnap.id;
+          const utr = user.utrNumber || "N/A";
+          const email = user.email || "Unknown Email";
+          const time = user.submittedAt ? new Date(user.submittedAt).toLocaleString() : "Just now";
+
+          // Create the Card HTML
+          const div = document.createElement("div");
+          div.className = "req-card";
+          div.innerHTML = `
+              <div class="info">
+                  <h3>${email}</h3>
+                  <p>UTR: <span class="utr-code">${utr}</span></p>
+                  <p style="margin-top:4px; font-size:12px; color:#999;">Submitted: ${time}</p>
+              </div>
+              <div class="actions">
+                  <button class="btn btn-approve" onclick="approveUser('${uid}', '${email}')">Approve</button>
+                  <button class="btn btn-reject" onclick="rejectUser('${uid}')">Reject</button>
+              </div>
+          `;
+          list.appendChild(div);
+      });
+  });
+
+  // --- 3. APPROVE FUNCTION ---
+  window.approveUser = async (uid, email) => {
+      if(!confirm(`Confirm payment for ${email}?`)) return;
+
+      try {
+          // Calculate 30 Days from NOW (in Milliseconds)
+          // 30 days * 24 hrs * 60 mins * 60 secs * 1000 ms
+          const newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
+
+          await updateDoc(doc(db, "users", uid), {
+              paymentStatus: "approved",       // Mark as handled
+              plan: "premium",                 // Set plan
+              subscriptionExpiry: newExpiry,   // Set date
+              approvedAt: Date.now()
+          });
+
+          // The card will automatically disappear because status is no longer 'pending'
+          alert("Success! User activated.");
+
+      } catch (error) {
+          alert("Error: " + error.message);
+      }
+  };
+
+  // --- 4. REJECT FUNCTION ---
+  window.rejectUser = async (uid) => {
+      const reason = prompt("Enter reason for rejection (optional):", "Invalid UTR");
+      if(reason === null) return; // User cancelled
+
+      try {
+          await updateDoc(doc(db, "users", uid), {
+              paymentStatus: "rejected",
+              rejectionReason: reason,
+              rejectedAt: Date.now()
+          });
+          alert("Request rejected.");
+      } catch (error) {
+          alert("Error: " + error.message);
+      }
+  };
+</script>
+
+</body>
+</html>
