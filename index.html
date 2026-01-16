@@ -16,6 +16,7 @@
         --success: #10b981;
         --warning: #f59e0b;
         --danger: #ef4444;
+        --referral: #8b5cf6; /* Purple for referrals */
     }
     * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
     body { background: var(--bg); display: flex; min-height: 100vh; }
@@ -50,14 +51,20 @@
     .section-title { font-size: 18px; font-weight: bold; margin-bottom: 15px; color: #333; }
     
     /* Pending Requests Cards */
-    .pending-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-bottom: 40px; }
+    .pending-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 15px; margin-bottom: 40px; }
     .req-card {
         background: white; padding: 20px; border-radius: 10px; border-left: 5px solid var(--warning);
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05); position: relative;
     }
     .req-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
     .utr-badge { background: #f1f5f9; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; font-weight: bold; }
     .req-actions { display: flex; gap: 10px; margin-top: 15px; }
+    
+    /* Referral Badge */
+    .ref-badge {
+        background: #f3e8ff; color: var(--referral); padding: 4px 8px; border-radius: 4px;
+        font-size: 11px; font-weight: bold; display: inline-flex; align-items: center; gap: 5px; margin-top: 5px;
+    }
 
     /* Data Table */
     .table-container { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); overflow-x: auto; }
@@ -100,7 +107,6 @@
     <div class="brand"><i class="fas fa-user-shield"></i> Admin Panel</div>
     <div class="menu-item active"><i class="fas fa-chart-line"></i> Dashboard</div>
     <div class="menu-item"><i class="fas fa-users"></i> Users</div>
-    <div class="menu-item"><i class="fas fa-cog"></i> Settings</div>
 </div>
 
 <div class="main">
@@ -155,6 +161,11 @@
         </div>
 
         <div class="form-group">
+            <label>Referrer UID (Optional)</label>
+            <input id="editReferredBy" class="form-input" disabled style="background:#f1f5f9; font-size:12px; color:#8b5cf6;">
+        </div>
+
+        <div class="form-group">
             <label>Plan Status</label>
             <select id="editPlan" class="form-input">
                 <option value="free">Free / Expired</option>
@@ -163,7 +174,7 @@
         </div>
 
         <div class="form-group">
-            <label>Subscription Expiry (Epoch ms)</label>
+            <label>Subscription Expiry (Date)</label>
             <input type="date" id="editDate" class="form-input">
         </div>
 
@@ -176,7 +187,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js";
-  import { getFirestore, collection, query, onSnapshot, doc, updateDoc, deleteDoc, orderBy } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js";
+  import { getFirestore, collection, query, onSnapshot, doc, updateDoc, deleteDoc, orderBy, getDoc } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDZLakPR2A5wQ7okDL-L7nCSxJDICiMtEQ",
@@ -238,6 +249,12 @@
       pendingUsers.forEach(u => {
           const card = document.createElement("div");
           card.className = "req-card";
+          
+          let referralHtml = '';
+          if(u.referredBy) {
+              referralHtml = `<div class="ref-badge"><i class="fas fa-gift"></i> Referred by: ${u.referredBy.substring(0,6)}...</div>`;
+          }
+
           card.innerHTML = `
               <div class="req-header">
                   <strong>${u.email}</strong>
@@ -246,8 +263,9 @@
               <div style="font-size:12px; color:#64748b;">
                   Submitted: ${new Date(u.submittedAt).toLocaleString()}
               </div>
+              ${referralHtml}
               <div class="req-actions">
-                  <button class="btn btn-approve" style="flex:1" onclick="handlePayment('${u.uid}', true, '${u.email}')">Accept</button>
+                  <button class="btn btn-approve" style="flex:1" onclick="handlePayment('${u.uid}', true, '${u.email}', '${u.referredBy || ''}')">Accept</button>
                   <button class="btn btn-reject" style="flex:1" onclick="handlePayment('${u.uid}', false)">Reject</button>
               </div>
           `;
@@ -266,7 +284,7 @@
           let badgeClass = "status-free";
           let statusText = "Free/Expired";
           
-          if(isPending) { badgeClass = "status-expired"; statusText = "Pending"; } // Red/Orange for attention
+          if(isPending) { badgeClass = "status-expired"; statusText = "Pending"; } 
           else if(isPremium) { badgeClass = "status-premium"; statusText = "Premium"; }
 
           const expiryDate = u.subscriptionExpiry ? new Date(u.subscriptionExpiry).toLocaleDateString() : "-";
@@ -287,17 +305,27 @@
 
   // --- ACTIONS ---
 
-  // 1. Approve/Reject Logic
-  window.handlePayment = async (uid, isApproved, email) => {
+  // 1. Approve/Reject Logic WITH REFERRAL SUPPORT
+  window.handlePayment = async (uid, isApproved, email, referredBy) => {
       if(isApproved) {
           if(!confirm(`Approve payment for ${email}?`)) return;
-          // Add 30 Days
+          
+          // 1. Approve the Main User (30 Days)
           const newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
           await updateDoc(doc(db, "users", uid), {
               paymentStatus: "approved",
               subscriptionExpiry: newExpiry,
               approvedAt: Date.now()
           });
+
+          // 2. Check for Referral Reward
+          if(referredBy && referredBy !== "null" && referredBy !== "undefined") {
+              const doReward = confirm(`This user was referred by ${referredBy.substring(0,6)}...\n\nDo you want to reward the Referrer with 7 FREE DAYS?`);
+              
+              if(doReward) {
+                  await rewardReferrer(referredBy);
+              }
+          }
       } else {
           if(!confirm("Reject this request?")) return;
           await updateDoc(doc(db, "users", uid), {
@@ -307,12 +335,42 @@
       }
   };
 
+  // Helper: Reward Referrer
+  async function rewardReferrer(referrerUid) {
+      try {
+          const refDocRef = doc(db, "users", referrerUid);
+          const refSnap = await getDoc(refDocRef);
+          
+          if(!refSnap.exists()) {
+              alert("Referrer not found in database.");
+              return;
+          }
+
+          const refData = refSnap.data();
+          let currentExpiry = refData.subscriptionExpiry || 0;
+          let now = Date.now();
+          let newDate;
+
+          // If expired, start 7 days from now. If active, add 7 days to existing.
+          if(currentExpiry < now) {
+              newDate = now + (7 * 24 * 60 * 60 * 1000);
+          } else {
+              newDate = currentExpiry + (7 * 24 * 60 * 60 * 1000);
+          }
+
+          await updateDoc(refDocRef, { subscriptionExpiry: newDate });
+          alert("Success! 7 days added to the referrer.");
+
+      } catch(e) {
+          console.error(e);
+          alert("Error rewarding referrer: " + e.message);
+      }
+  }
+
   // 2. Delete User
   window.deleteUser = async (uid) => {
       if(confirm("Are you sure? This will delete the user's data permanently.")) {
           await deleteDoc(doc(db, "users", uid));
-          // Note: This deletes Firestore data. It does NOT delete Authentication user.
-          // To delete Auth user, you need Cloud Functions or Admin SDK (Server Side).
       }
   };
 
@@ -324,12 +382,11 @@
       document.getElementById("editModal").style.display = "flex";
       document.getElementById("editUid").value = uid;
       document.getElementById("editEmail").value = user.email;
+      document.getElementById("editReferredBy").value = user.referredBy || "None";
       
-      // Set Plan Select
       const isPremium = user.subscriptionExpiry > Date.now();
       document.getElementById("editPlan").value = isPremium ? "premium" : "free";
 
-      // Set Date Input (Convert timestamp to YYYY-MM-DD)
       if(user.subscriptionExpiry) {
           const d = new Date(user.subscriptionExpiry);
           document.getElementById("editDate").value = d.toISOString().split('T')[0];
@@ -353,16 +410,14 @@
           if(dateStr) {
               newExpiry = new Date(dateStr).getTime();
           } else {
-              // Default to 30 days from now if no date picked but premium selected
               newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
           }
       } else {
-          newExpiry = 0; // Reset to free
+          newExpiry = 0; 
       }
 
       await updateDoc(doc(db, "users", uid), {
           subscriptionExpiry: newExpiry,
-          // If we manually set to premium, clear any pending status logic
           paymentStatus: plan === "premium" ? "approved" : "none"
       });
 
