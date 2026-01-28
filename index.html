@@ -16,7 +16,7 @@
         --success: #10b981;
         --warning: #f59e0b;
         --danger: #ef4444;
-        --referral: #8b5cf6; /* Purple for referrals */
+        --referral: #8b5cf6;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
     body { background: var(--bg); display: flex; min-height: 100vh; }
@@ -76,6 +76,10 @@
     .status-premium { background: #dcfce7; color: #166534; }
     .status-free { background: #f1f5f9; color: #475569; }
     .status-expired { background: #fee2e2; color: #991b1b; }
+    
+    /* Active Status Dot */
+    .active-dot { height: 8px; width: 8px; background-color: #10b981; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    .inactive-text { color: #94a3b8; font-size: 12px; }
 
     /* Buttons */
     .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; color: white; }
@@ -138,7 +142,7 @@
             <thead>
                 <tr>
                     <th>Email</th>
-                    <th>Status</th>
+                    <th>Last Active</th> <th>Status</th>
                     <th>Expires</th>
                     <th>Actions</th>
                 </tr>
@@ -202,7 +206,7 @@
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
 
-  let globalUsers = []; // Store users for searching
+  let globalUsers = []; 
 
   // --- REALTIME LISTENER FOR ALL USERS ---
   const q = query(collection(db, "users"), orderBy("joinedAt", "desc"));
@@ -217,7 +221,6 @@
           data.uid = docSnap.id;
           users.push(data);
 
-          // Stats Logic
           if(data.paymentStatus === 'pending') pendingCount++;
           if(data.subscriptionExpiry > Date.now()) premiumCount++;
       });
@@ -233,6 +236,30 @@
       document.getElementById("statTotal").innerText = total;
       document.getElementById("statPremium").innerText = prem;
       document.getElementById("statPending").innerText = pend;
+  }
+
+  // --- NEW: TIME AGO HELPER ---
+  function timeAgo(date) {
+        if(!date) return '<span class="inactive-text">Never</span>';
+        
+        const seconds = Math.floor((new Date() - date) / 1000);
+        
+        let interval = seconds / 31536000;
+        if (interval > 1) return Math.floor(interval) + "y ago";
+        
+        interval = seconds / 2592000;
+        if (interval > 1) return Math.floor(interval) + "m ago";
+        
+        interval = seconds / 86400;
+        if (interval > 1) return Math.floor(interval) + "d ago";
+        
+        interval = seconds / 3600;
+        if (interval > 1) return Math.floor(interval) + "h ago";
+        
+        interval = seconds / 60;
+        if (interval > 1) return Math.floor(interval) + "m ago";
+        
+        return '<span style="color:#10b981; font-weight:bold;">Just now</span>';
   }
 
   function renderPending(users) {
@@ -288,10 +315,14 @@
           else if(isPremium) { badgeClass = "status-premium"; statusText = "Premium"; }
 
           const expiryDate = u.subscriptionExpiry ? new Date(u.subscriptionExpiry).toLocaleDateString() : "-";
+          
+          // --- LAST ACTIVE DISPLAY ---
+          const lastActiveDisplay = timeAgo(u.lastActiveAt);
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
               <td>${u.email} <br><span style="font-size:11px; color:#94a3b8;">UID: ${u.uid.substr(0,8)}...</span></td>
+              <td style="font-size:13px; color:#475569;">${lastActiveDisplay}</td>
               <td><span class="status-badge ${badgeClass}">${statusText}</span></td>
               <td>${expiryDate}</td>
               <td>
@@ -305,12 +336,10 @@
 
   // --- ACTIONS ---
 
-  // 1. Approve/Reject Logic WITH REFERRAL SUPPORT
   window.handlePayment = async (uid, isApproved, email, referredBy) => {
       if(isApproved) {
           if(!confirm(`Approve payment for ${email}?`)) return;
           
-          // 1. Approve the Main User (30 Days)
           const newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
           await updateDoc(doc(db, "users", uid), {
               paymentStatus: "approved",
@@ -318,63 +347,42 @@
               approvedAt: Date.now()
           });
 
-          // 2. Check for Referral Reward
           if(referredBy && referredBy !== "null" && referredBy !== "undefined") {
               const doReward = confirm(`This user was referred by ${referredBy.substring(0,6)}...\n\nDo you want to reward the Referrer with 7 FREE DAYS?`);
-              
-              if(doReward) {
-                  await rewardReferrer(referredBy);
-              }
+              if(doReward) { await rewardReferrer(referredBy); }
           }
       } else {
           if(!confirm("Reject this request?")) return;
-          await updateDoc(doc(db, "users", uid), {
-              paymentStatus: "rejected",
-              rejectedAt: Date.now()
-          });
+          await updateDoc(doc(db, "users", uid), { paymentStatus: "rejected", rejectedAt: Date.now() });
       }
   };
 
-  // Helper: Reward Referrer
   async function rewardReferrer(referrerUid) {
       try {
           const refDocRef = doc(db, "users", referrerUid);
           const refSnap = await getDoc(refDocRef);
-          
-          if(!refSnap.exists()) {
-              alert("Referrer not found in database.");
-              return;
-          }
+          if(!refSnap.exists()) { alert("Referrer not found."); return; }
 
           const refData = refSnap.data();
           let currentExpiry = refData.subscriptionExpiry || 0;
           let now = Date.now();
           let newDate;
 
-          // If expired, start 7 days from now. If active, add 7 days to existing.
-          if(currentExpiry < now) {
-              newDate = now + (7 * 24 * 60 * 60 * 1000);
-          } else {
-              newDate = currentExpiry + (7 * 24 * 60 * 60 * 1000);
-          }
+          if(currentExpiry < now) { newDate = now + (7 * 24 * 60 * 60 * 1000); } 
+          else { newDate = currentExpiry + (7 * 24 * 60 * 60 * 1000); }
 
           await updateDoc(refDocRef, { subscriptionExpiry: newDate });
           alert("Success! 7 days added to the referrer.");
 
-      } catch(e) {
-          console.error(e);
-          alert("Error rewarding referrer: " + e.message);
-      }
+      } catch(e) { console.error(e); alert("Error: " + e.message); }
   }
 
-  // 2. Delete User
   window.deleteUser = async (uid) => {
       if(confirm("Are you sure? This will delete the user's data permanently.")) {
           await deleteDoc(doc(db, "users", uid));
       }
   };
 
-  // 3. Edit User (Modal Logic)
   window.openEditModal = (uid) => {
       const user = globalUsers.find(u => u.uid === uid);
       if(!user) return;
@@ -395,9 +403,7 @@
       }
   };
 
-  window.closeModal = () => {
-      document.getElementById("editModal").style.display = "none";
-  };
+  window.closeModal = () => { document.getElementById("editModal").style.display = "none"; };
 
   window.saveUserChanges = async () => {
       const uid = document.getElementById("editUid").value;
@@ -405,15 +411,9 @@
       const dateStr = document.getElementById("editDate").value;
 
       let newExpiry = 0;
-
       if(plan === "premium") {
-          if(dateStr) {
-              newExpiry = new Date(dateStr).getTime();
-          } else {
-              newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
-          }
-      } else {
-          newExpiry = 0; 
+          if(dateStr) { newExpiry = new Date(dateStr).getTime(); } 
+          else { newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); }
       }
 
       await updateDoc(doc(db, "users", uid), {
@@ -425,7 +425,6 @@
       alert("User updated successfully");
   };
 
-  // 4. Search Filter
   window.filterUsers = () => {
       const input = document.getElementById("searchInput").value.toLowerCase();
       const filtered = globalUsers.filter(u => u.email.toLowerCase().includes(input));
